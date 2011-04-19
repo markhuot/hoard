@@ -121,3 +121,12 @@ unset($commit);
 
 // Change directories back to the parent
 chdir($path);
+
+// Clean up memory
+unset($conn);
+unset($path);
+unset($host);
+unset($user);
+unset($pass);
+unset($database);
+unset($tables);
