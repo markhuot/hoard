@@ -1,0 +1,123 @@
+#!/usr/bin/php
+<?php
+
+// Set a default dump path
+$path = rtrim(dirname(__FILE__), '/');
+
+// Set up default connection params
+$host = 'localhost';
+$user = null;
+$pass = null;
+$database = null;
+
+// Parse command line args
+$set = false;
+foreach ($argv as $arg)
+{
+	if ($set !== FALSE)
+	{
+		$$set = $arg;
+		$set = FALSE;
+		continue;
+	}
+	
+	switch (substr($arg, 0, 2))
+	{
+		case '-h':
+			$set = 'host';
+			break;
+		
+		case '-u':
+			$set = 'user';
+			break;
+		
+		case '-p':
+			$pass = substr($arg, 2);
+			break;
+	}
+	
+	switch ($arg)
+	{
+		case '--path':
+			$set = 'path';
+			break;
+	}
+	
+	if (substr($arg, 0, 1) !== '-')
+	{
+		$database = $arg;
+	}
+}
+unset($set);
+unset($arg);
+
+// Connect to the database
+if (($conn = @mysql_connect($host, $user, $pass)) === FALSE)
+{
+	die("Could not connect to database.\n");
+}
+
+// Select the database
+if (mysql_select_db($database, $conn) === FALSE)
+{
+	die("Could not select database.\n");
+}
+
+// Get the tables
+$tables = array();
+$query = mysql_query('SHOW TABLES', $conn);
+while ($row = mysql_fetch_array($query))
+{
+	$tables[] = $row[0];
+}
+unset($query);
+unset($row);
+
+// Make sure folder structure is correct
+@mkdir("{$path}/backups");
+@mkdir("{$path}/backups/{$host}");
+@mkdir("{$path}/backups/{$host}/{$database}");
+
+// Dump each table to a file
+foreach ($tables as $table)
+{
+	$filename = "{$path}/backups/{$host}/{$database}/{$table}.sql";
+	$dump = `mysqldump -h {$host} -u {$user} -p{$pass} {$database} {$table} --skip-dump-date`;
+
+	if (!$handle = fopen($filename, 'w'))
+	{
+		 die("Cannot open file {$filename}.\n");
+	}
+
+	if (fwrite($handle, $dump) === FALSE)
+	{
+		die("Cannot write to file {$filename}.\n");
+	}
+
+	fclose($handle);
+	unset($handle);
+	unset($filename);
+	unset($dump);
+}
+unset($table);
+
+// Change directories to the individual database
+chdir("{$path}/backups/{$host}/{$database}");
+
+// Create a new GIT repo, if needed
+if (!file_exists("{$path}/backups/{$host}/{$database}/.git"))
+{
+	$init = `git init`;
+}
+unset($init);
+
+// Add any new tables
+$add = `git add .`;
+unset($add);
+
+// Commit changes
+$commit = `git commit -am "Backup commit"`;
+unset($commit);
+
+// Change directories back to the parent
+chdir($path);

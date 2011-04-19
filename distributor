@@ -1,0 +1,18 @@
+#!/usr/bin/php
+<?php
+
+$conn = mysql_connect('localhost', 'root', 'root');
+mysql_select_db('local_hoard');
+
+$time = time();
+$query = mysql_query("SELECT * FROM `jobs` WHERE `active` = 0 AND `next_run` < {$time} ORDER BY RAND() LIMIT 1");
+
+while ($d = mysql_fetch_object($query))
+{
+	mysql_query("UPDATE `jobs` SET `active` = 1 WHERE `id` = {$d->id}");
+	
+	`/var/www/vhosts/hoard/hoard -h {$d->host} -u {$d->user} -p{$d->pass} {$d->name}`;
+	
+	$next_run = time() + $d->interval;
+	mysql_query("UPDATE `jobs` SET `active` = 0, `next_run` = {$next_run} WHERE `id` = {$d->id}");
+}
