@@ -1,18 +1,97 @@
 #!/usr/bin/php
 <?php
 
-$conn = mysql_connect('localhost', 'root', 'root');
-mysql_select_db('local_hoard');
-
-$time = time();
-$query = mysql_query("SELECT * FROM `jobs` WHERE `active` = 0 AND `next_run` < {$time} ORDER BY RAND() LIMIT 1");
-
-while ($d = mysql_fetch_object($query))
+// Connect to the administrative database
+// Connect to the database
+if (($conn = @mysql_connect('', '', '')) === FALSE)
 {
-	mysql_query("UPDATE `jobs` SET `active` = 1 WHERE `id` = {$d->id}");
+	die("Could not connect to database.\n");
+}
+
+// Select the database
+if (mysql_select_db('', $conn) === FALSE)
+{
+	die("Could not select database.\n");
+}
+
+// For testing reset all our jobs to inactive
+mysql_query("UPDATE `jobs` SET `active` = 0", $conn);
+
+// Loop, forever and ever and ever...
+while (true)
+{
 	
-	`/var/www/vhosts/hoard/hoard -h {$d->host} -u {$d->user} -p{$d->pass} {$d->name}`;
+	// Slow down, there's no reason to run out as fast as PHP can process, at least not yet, sleep
+	// for a second and give the server a chance to breathe.
+	usleep(2 /*seconds */ * 1000000 /* microseconds */);
 	
-	$next_run = time() + $d->interval;
-	mysql_query("UPDATE `jobs` SET `active` = 0, `next_run` = {$next_run} WHERE `id` = {$d->id}");
+	// Record the time the export started
+	$time = time();
+	$microtime = microtime();
+	
+	// Get the parent process ID. Because we kill the children down below this line should only ever
+	// be run by the parent.
+	$pid = posix_getpid();
+	
+	// Find any available jobs
+	$query = mysql_query("SELECT * FROM `jobs` WHERE `active` = 0 AND (`next_run` < {$time} OR `next_run` IS NULL) ORDER BY RAND() LIMIT 1", $conn);
+	
+	// If MySQL errors out or we don't have any jobs to complete stop here.
+	if (!$query || ($query && !mysql_num_rows($query)))
+	{
+		echo "[{$pid}] No available jobs, waiting.\n";
+		continue;
+	}
+	
+	// Fork!
+	$pid = pcntl_fork();
+	
+	// Is forking enabled? If not bail out and cry since it's core to this script.
+	if ($pid === -1)
+	{
+		die('Forking not supported :\'(');
+	}
+	
+	// Do we have a process ID? Great, we're in the parent thread!
+	if ($pid > 0)
+	{
+		// The parent must retrieve the child's status or the child will go defunct and never end.
+		// So, we can simply tell the parent to recieve $status from all children (-1) without
+		// waiting (WNOHANG). This returns immeadeately, letting the children process die on their
+		// own while the parent keeps humming along.
+		// http://bugs.php.net/bug.php?id=27739
+		pcntl_waitpid(-1, $status, WNOHANG);
+	}
+	
+	// If the fork returns 0 then we're in the child thread, so we'll do our real work here
+	if ($pid === 0)
+	{
+		// Get the child's process id, for reporting purposes
+		$child_pid = posix_getpid();
+		
+		// Fetch the database result from the query that ran in the parent thread... this may be
+		// unsafe, I need to do some more research though
+		$d = mysql_fetch_object($query);
+		
+		// Update the database to denote that we're working on this job.
+		mysql_query("UPDATE `jobs` SET `active` = 1 WHERE `id` = {$d->id}", $conn);
+		
+		// Let the CLI know what we're doing.
+		echo "[{$child_pid}] Dumping `{$d->host}.{$d->name}`\n";
+		
+		// Run the dump!
+		`/var/www/vhosts/hoard/hoard -h {$d->host} -u {$d->user} -p{$d->pass} {$d->name}`;
+		
+		// Determine when it should run again.
+		$next_run = time() + $d->interval;
+		
+		// Update the database to denote that we're done and when this job should run again.
+		mysql_query("UPDATE `jobs` SET `active` = 0, `next_run` = {$next_run} WHERE `id` = {$d->id}");
+		
+		// The child should stop right here. We don't want the child spawning grandchild, who spawn
+		// great-grandchildren, who span great-great-grandchildren, who spawn, well you get the
+		// point. Stop here since the child has completed their work.
+		posix_kill($child_pid, SIGHUP);
+		exit;
+	}
 }
